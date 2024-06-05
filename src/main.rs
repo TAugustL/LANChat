@@ -20,7 +20,7 @@ async fn stream_io_thread(mut stream: TcpStream, other_usr: String) -> Sender<St
         let mut line = String::new();
         if let Ok(_err) = reader.read_line(&mut line) {
             if line != "" {
-                println!("{} : {}", other_usr, line.trim());
+                println!("{}: {}", other_usr, line.trim());
             }
         }
         match input_receiver.try_recv() {
@@ -66,11 +66,8 @@ async fn connect(usr_name: String, addr: String) -> std::io::Result<()> {
 }
 
 async fn listen(usr_name: String, port: usize) -> std::io::Result<()> {
-    let listener = TcpListener::bind(format!(
-        "{addr}:{port}",
-        addr = local_ip().unwrap_or(IpAddr::from_str("127.0.0.1").unwrap())
-    ))
-    .await?;
+    let addr = local_ip().unwrap_or(IpAddr::from_str("127.0.0.1").unwrap());
+    let listener = TcpListener::bind(format!("{addr}:{port}")).await?;
 
     let mut stream = listener.accept().await?.0;
     stream.write(usr_name.as_bytes()).await?;
@@ -97,7 +94,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if args.len() > 1 {
         if args[1] == "server" {
             println!("I'm a server");
-            if let Err(_err) = listen(
+            if let Err(err) = listen(
                 get_usr_name(),
                 args.last()
                     .unwrap_or(&"8888".to_string())
@@ -106,7 +103,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .await
             {
-                println!("an error occured in listen()")
+                println!("an error occured in listen(): {err}");
             }
         } else if args[1] == "client" {
             println!("I'm a client");
