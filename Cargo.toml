@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.43.0", default-features = false, features = ["macros", "net", "io-util", "rt-multi-thread"] }
 local-ip-address = "0.6.1"
+crossterm = { version = "0.28.1", default-features = false }
