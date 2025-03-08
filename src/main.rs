@@ -2,7 +2,7 @@ use std::error::Error;
 use std::io::{prelude::*, stdin, stdout, BufReader};
 use std::net::{IpAddr, TcpStream};
 use std::str::FromStr;
-use std::sync::mpsc::{channel, Sender, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::{env, str};
 use std::{thread, time};
 
@@ -11,28 +11,63 @@ use tokio::net::TcpListener;
 
 use local_ip_address::local_ip;
 
-use crossterm::{cursor, queue};
+use crossterm::event::{read, KeyCode};
+use crossterm::{cursor, event, queue};
 
 const SLEEP_LENGTH: time::Duration = time::Duration::from_millis(100);
+const WIDTH: usize = 74;
+const HEIGHT: usize = 30;
 
-async fn stream_io_thread(mut stream: TcpStream, other_usr: String) -> Sender<String> {
+async fn stream_io_thread(
+    mut stream: TcpStream,
+    other_usr: String,
+    line_channel: (Sender<u16>, Receiver<u16>),
+) -> Sender<String> {
     let mut reader = BufReader::new(stream.try_clone().expect("Failed to clone stream!"));
     let (input_sender, input_receiver) = channel::<String>();
+    let mut new_line_index: u16 = 1;
+    let mut stdout = stdout();
     thread::spawn(move || loop {
         let mut line = String::new();
+        if let Ok(line_counter) = line_channel.1.try_recv() {
+            new_line_index = line_counter;
+        }
+
         if let Ok(_err) = reader.read_line(&mut line) {
             if !line.is_empty() {
+                stdout.flush().unwrap();
                 let message = format!(
                     "\x1b[93m{}\x1b[0m: {}",
                     other_usr.trim_matches('\0'),
                     line.trim()
                 );
-                let mut stdout = stdout();
-                queue!(stdout, cursor::MoveUp(1)).unwrap();
-                println!("\r\n{message}");
-                queue!(stdout, cursor::MoveDown(2)).unwrap();
-                println!();
-                print!("\x1b[96m> ");
+                queue!(
+                    stdout,
+                    cursor::SavePosition,
+                    cursor::MoveToRow(new_line_index)
+                )
+                .unwrap();
+                new_line_index += 1 + (message.len() / WIDTH) as u16;
+                if new_line_index > HEIGHT as u16 {
+                    new_line_index = HEIGHT as u16;
+                    let space_buffer: &str = &" ".repeat(WIDTH - 4 - message.len());
+                    let message = format!("{message}{space_buffer}");
+                    print!("\r┃ {}", message);
+                    queue!(
+                        stdout,
+                        crossterm::terminal::ScrollUp(1),
+                        cursor::MoveToPreviousLine(60)
+                    )
+                    .unwrap();
+                    draw_gui();
+                    queue!(stdout, cursor::MoveToRow(new_line_index)).unwrap();
+                    print!("\r┃{}┃", " ".repeat(WIDTH - 2));
+                    stdout.flush().unwrap();
+                } else {
+                    line_channel.0.send(new_line_index).unwrap();
+                    print!("\r┃ {}", message);
+                }
+                queue!(stdout, cursor::RestorePosition).unwrap();
                 stdout.flush().unwrap();
             }
         }
@@ -54,49 +89,128 @@ async fn stream_io_thread(mut stream: TcpStream, other_usr: String) -> Sender<St
 async fn chat(stream: TcpStream, usr: &str) {
     println!("Entering chat...\n");
     stream.set_nonblocking(true).unwrap();
-    let input_sender = stream_io_thread(stream, usr.to_string()).await;
+    let line_channel1 = channel::<u16>();
+    let line_channel2 = channel::<u16>();
+    let input_sender =
+        stream_io_thread(stream, usr.to_string(), (line_channel1.0, line_channel2.1)).await;
     let mut stdout = stdout();
     queue!(
         stdout,
-        crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        cursor::MoveToRow(0),
+        cursor::MoveToColumn(0),
     )
     .unwrap();
-    queue!(stdout, cursor::MoveToNextLine(100)).unwrap();
+
+    draw_gui();
+
+    queue!(stdout, cursor::MoveToPreviousLine(3), cursor::MoveRight(2)).unwrap();
+    let mut usr_input = String::new();
+    crossterm::terminal::enable_raw_mode().unwrap();
+    let mut new_line_index: u16 = 1;
     loop {
-        thread::sleep(SLEEP_LENGTH);
-        let usr_input = take_input();
-        if usr_input == "q!\n" {
-            return;
+        if let Ok(line_counter) = line_channel1.1.try_recv() {
+            new_line_index = line_counter;
         }
-        if usr_input == "\n" {
-            continue;
+
+        if event::poll(SLEEP_LENGTH).unwrap() {
+            let key_event = read().unwrap();
+
+            if let event::Event::Key(k_event) = key_event {
+                if let Ok(key_char) = char::from_str(&k_event.code.to_string()) {
+                    if usr_input.len() < 128 {
+                        print!("{}", k_event.code);
+                        usr_input.push(key_char);
+                    }
+                    let col = cursor::position().unwrap().0;
+                    queue!(stdout, cursor::MoveToColumn(2),).unwrap();
+                    print!(
+                        "{}",
+                        &usr_input[(usr_input.len() as i16 - (WIDTH - 4) as i16)
+                            .clamp(0, WIDTH as i16) as usize..]
+                    );
+                    queue!(stdout, cursor::MoveToColumn(col)).unwrap();
+                }
+                if k_event.code == KeyCode::Char(' ') {
+                    print!(" ");
+                    usr_input.push(' ');
+                }
+                if k_event.code == KeyCode::Backspace && !usr_input.is_empty() {
+                    queue!(stdout, cursor::MoveLeft(1)).unwrap();
+                    print!(" ");
+                    queue!(stdout, cursor::MoveLeft(1)).unwrap();
+                    usr_input.pop();
+                }
+                stdout.flush().unwrap()
+            }
+
+            //println!("Event::{:?}\r", key_event);
+
+            if key_event == event::Event::Key(KeyCode::Enter.into()) && !usr_input.is_empty() {
+                usr_input.push('\n');
+                match input_sender.send(usr_input.clone()) {
+                    Err(_e) => return,
+                    Ok(f) => f,
+                };
+                queue!(stdout, cursor::MoveToRow(new_line_index)).unwrap();
+                new_line_index += 1 + (usr_input.len() / WIDTH) as u16;
+                if new_line_index > HEIGHT as u16 {
+                    new_line_index = HEIGHT as u16;
+                    let space_buffer: &str = &" ".repeat(WIDTH - 4 - usr_input.len());
+                    print!("\r┃ > {}{space_buffer}┃", usr_input);
+                    queue!(
+                        stdout,
+                        crossterm::terminal::ScrollUp(1),
+                        cursor::MoveToPreviousLine(50)
+                    )
+                    .unwrap();
+                    draw_gui();
+                    queue!(stdout, cursor::MoveToRow(new_line_index)).unwrap();
+                    print!("\r┃{}┃", " ".repeat(WIDTH - 2));
+                    stdout.flush().unwrap();
+                } else {
+                    line_channel2.0.send(new_line_index).unwrap();
+                    print!("\r┃ > {}", usr_input);
+                }
+                usr_input.clear();
+                queue!(stdout, cursor::MoveToNextLine(60), cursor::MoveUp(4)).unwrap();
+                print!("\r┃{}┃\r", " ".repeat(WIDTH - 2));
+                queue!(stdout, cursor::MoveRight(2)).unwrap();
+                stdout.flush().unwrap();
+            }
+
+            if key_event == event::Event::Key(KeyCode::Esc.into()) {
+                return;
+            }
         }
-        println!();
-        match input_sender.send(usr_input) {
-            Err(_e) => return,
-            Ok(f) => f,
-        };
     }
 }
 
-fn take_input() -> String {
-    print!("\x1b[96m> ");
-    stdout().flush().expect("Failed to flush stdout!");
-
-    let mut input: String = String::new();
-    stdin()
-        .read_line(&mut input)
-        .expect("Failed to read from stdin!");
-    print!("\x1b[0m");
-    stdout().flush().expect("Failed to flush stdout!");
-    input.to_string()
+fn draw_gui() {
+    let mut stdout = stdout();
+    println!("\r┏━━LAN-Chat{}┓", "━".repeat(WIDTH - 12));
+    for _ in 0..HEIGHT {
+        queue!(
+            stdout,
+            crossterm::style::Print("\r┃"),
+            cursor::MoveToColumn(WIDTH as u16 - 1),
+            crossterm::style::Print("┃\n")
+        )
+        .unwrap();
+    }
+    println!("\r┗{}┛", "━".repeat(WIDTH - 2));
+    println!("\r┏━━Enter Message:{}┓", "━".repeat(WIDTH - 18));
+    for _ in 0..3 {
+        println!("\r┃{}┃", " ".repeat(WIDTH - 2));
+    }
+    println!("\r┗{}┛", "━".repeat(WIDTH - 2)); // WIDTH
 }
 
 async fn connect(usr_name: String, addr: String) -> std::io::Result<()> {
     println!("Client '{usr_name}' connecting to {addr}");
     let mut stream = TcpStream::connect(addr)?;
     stream.write(usr_name.as_bytes())?;
-    let mut line = [0; 256];
+    let mut line = [0; 128];
     stream.read(&mut line)?;
     chat(stream, str::from_utf8(&line).unwrap()).await;
     Ok(())
@@ -110,7 +224,7 @@ async fn listen(usr_name: String, port: usize) -> std::io::Result<()> {
 
     let mut stream = listener.accept().await?.0;
     stream.write(usr_name.as_bytes()).await?;
-    let mut line = [0; 256];
+    let mut line = [0; 128];
     stream.read(&mut line).await?;
     chat(stream.into_std()?, str::from_utf8(&line).unwrap()).await;
 
