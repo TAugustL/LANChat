@@ -173,7 +173,7 @@ async fn chat(stream: TcpStream, usr: &str) {
                     print!("\r┃ > {}", usr_input);
                 }
                 usr_input.clear();
-                queue!(stdout, cursor::MoveToNextLine(60), cursor::MoveUp(4)).unwrap();
+                queue!(stdout, cursor::MoveToRow(HEIGHT as u16 + 4)).unwrap();
                 print!("\r┃{}┃\r", " ".repeat(WIDTH - 2));
                 queue!(stdout, cursor::MoveRight(2)).unwrap();
                 stdout.flush().unwrap();
