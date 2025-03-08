@@ -25,4 +25,6 @@ cargo run --release client [IP address of the host and port, e.g. 192.168.2.1:88
 ```
 
 <p>Now both devices should enter the chat room. Type your messages and press enter to send them!</p>
-![preview](https://github.com/TAugustL/LANChat/blob/main/preview.jpg)
+
+![preview](https://github.com/TAugustL/LANChat/blob/main/preview.jpg?raw=true)
+<p>above: inside the chat room (this may look slightly different, depending on your terminal emulator)</p>
